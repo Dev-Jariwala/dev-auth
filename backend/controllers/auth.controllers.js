@@ -185,7 +185,7 @@ export const loginUser = async (req, res) => {
                     return res.status(500).json({ message: "Internal server error while generating OTP" });
                 }
             }
-            // sendOtp(user.email, otp);
+            sendOtp(user.email, otp);
             return res.status(401).json({
                 message: "OTP sent",
                 error: "OTP sent",

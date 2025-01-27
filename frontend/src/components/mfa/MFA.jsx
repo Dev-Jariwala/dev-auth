@@ -168,7 +168,7 @@ const MFAForm = () => {
     const renderMFAForm = () => (
         <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                {!MFAData.is_mfa && (
+                {!MFAData?.is_mfa && (
                     <FormField
                         control={form.control}
                         name="is_mfa"
@@ -276,7 +276,9 @@ const MFAForm = () => {
                     />
                 )}
                 {!otpSent && form.watch("is_mfa") && (
-                    <Button type="submit" disabled={updateUserMFAMutation.isPending} className="w-full mt-4">
+                    <Button type="submit" disabled={updateUserMFAMutation.isPending} isLoading={updateUserMFAMutation.isPending} loadingText={MFAData?.mfaMethods?.find((m) => m.mfa_type === form.watch('mfa_type'))?.is_enabled
+                        ? "Disabling..."
+                        : "Enabling..."} className="w-full mt-4">
                         {MFAData?.mfaMethods?.find((m) => m.mfa_type === form.watch('mfa_type'))?.is_enabled
                             ? "Disable"
                             : "Enable"}
@@ -324,7 +326,9 @@ const MFAForm = () => {
                 <CardDescription className="text-sm text-muted-foreground">Enhance your account security with MFA</CardDescription>
             </CardHeader>
             {isMFADataLoading ? (
-                <div className="text-center">Loading...</div>
+                <div className="flex items-center justify-center h-40">
+                    <div className="basic-loader"></div>
+                </div>
             ) : MFAData?.is_mfa && !isEditMode ? (
                 <>
                     <CardContent>{renderMFAStatus()}</CardContent>

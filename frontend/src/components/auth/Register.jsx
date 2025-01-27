@@ -161,7 +161,7 @@ const Register = () => {
                             />
 
                             {/* Submit Button */}
-                            <Button type="submit" className="w-full">
+                            <Button type="submit" className="w-full" disabled={registerMutation.isPending} isLoading={registerMutation.isPending} loadingText="Registering..." >
                                 Register
                             </Button>
                         </form>

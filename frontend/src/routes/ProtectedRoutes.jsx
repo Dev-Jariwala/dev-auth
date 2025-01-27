@@ -16,9 +16,11 @@ const ProtectedRoutes = () => {
             toast.error(error.message);
         }
     }, [error]);
-    
+
     if (isLoading) {
-        return <div>Loading...</div>
+        return <div className="flex items-center justify-center h-64">
+            <div className="basic-loader"></div>
+        </div>
     }
     if (!userAuthenticated?.authenticated) {
         return <Navigate to="/login" />
