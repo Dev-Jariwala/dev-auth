@@ -15,15 +15,15 @@ app.use(cors({
     origin: ['https://work.memighty.com', 'http://localhost:5173', process.env.FRONTEND_DOMAIN],
     credentials: true,
 }));
-console.log(`process.env.NODE_ENV === 'production'`, process.env.NODE_ENV === 'production');
 app.use(
     session({
         secret: process.env.SESSION_SECRET,
         resave: false,
         saveUninitialized: false,
-        cookie: { maxAge: null },
+        cookie: { maxAge: null, secure: process.env.NODE_ENV === 'production' },
     })
 );
+console.log('node env: ', process.env.NODE_ENV);
 
 const sessionMiddleware = (req, res, next) => {
     const existingSessionId = req.session.sessionId;
@@ -31,7 +31,7 @@ const sessionMiddleware = (req, res, next) => {
     if (!existingSessionId) {
         // Generate a new sessionId
         const newSessionId = uuid();
-        console.log(`req.session: ${req.session}`);
+        console.log(`req.session: ${JSON.stringify(req.session, null, 2)}`);
         req.session.sessionId = newSessionId;
         req.session.visited = true;
         if (req.cookies.accessToken) {
