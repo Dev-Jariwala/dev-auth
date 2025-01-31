@@ -15,12 +15,13 @@ app.use(cors({
     origin: ['https://work.memighty.com', 'http://localhost:5173', process.env.FRONTEND_DOMAIN],
     credentials: true,
 }));
+console.log(`process.env.NODE_ENV === 'production'`, process.env.NODE_ENV === 'production');
 app.use(
     session({
         secret: process.env.SESSION_SECRET,
         resave: false,
         saveUninitialized: false,
-        cookie: { maxAge: null, secure: process.env.NODE_ENV === 'production' },
+        cookie: { maxAge: null },
     })
 );
 
