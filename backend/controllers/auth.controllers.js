@@ -100,7 +100,7 @@ export const registerUser = async (req, res) => {
 
 export const loginUser = async (req, res) => {
     const { loginId, password, otp, mfa_type } = req.body; // Added mfa_type to request body
-    const sessionId = req.cookies.session_id;
+    const sessionId = req.session.sessionId;
 
     if (!loginId || !password) {
         return res.status(400).json({ message: "Please provide all the required fields" });
@@ -355,12 +355,10 @@ export const revokeEmailVerificationToken = async (req, res) => {
 export const updateUserMFA = async (req, res) => {
     const { is_enabled, mfa_type, otp, totp_secret } = req.body;
     const { user_id } = req.user;
-    const sessionId = req.cookies.session_id;
-    console.log('req.body in updateUserMFA: ', req.body);
+    const sessionId = req.session.sessionId;
     if (!mfa_type || !['email_otp', 'phone_otp', 'totp', 'none'].includes(mfa_type)) {
         return res.status(400).json({ message: "Please provide valid MFA type" });
     }
-    console.log('Request body: ', req.body);
     try {
         // Check if the user has already enabled MFA
         const [user] = await pgquery('SELECT * FROM auth_users WHERE user_id = $1', [user_id]);
@@ -375,9 +373,7 @@ export const updateUserMFA = async (req, res) => {
 
         if (mfa_type === 'email_otp' && !otp) {
             // Generate OTP using otplib
-            const otp = generateOtp(sessionId);
-            console.log('OTP: ', otp);
-            console.log('Session ID: ', sessionId);
+            const otp = generateOtp(sessionId, 'totp');
             // Check if OTP already exists for the session
             const [existingOtp] = await pgquery('SELECT * FROM otps WHERE session_id = $1 AND type = $2', [sessionId, 'mfa']);
             if (existingOtp) {
@@ -393,7 +389,7 @@ export const updateUserMFA = async (req, res) => {
                     return res.status(500).json({ message: "Internal server error while generating OTP" });
                 }
             }
-            // sendOtp(user.email, otp);
+            sendOtp(user.email, otp);
 
             // You may need to send this OTP to the user's email based on your MFA setup
             return res.status(200).json({
@@ -403,10 +399,8 @@ export const updateUserMFA = async (req, res) => {
             });
         }
         if (mfa_type === 'email_otp' && otp) {
-            console.log('Session ID: ', sessionId);
-            console.log('OTP: ', otp);
             // Verify the OTP
-            const isValid = verifyOtp(sessionId, otp);
+            const isValid = verifyOtp(sessionId, otp, 'totp');
             if (!isValid) {
                 return res.status(401).json({ message: "Invalid OTP", error: "Invalid OTP" });
             }
@@ -436,8 +430,6 @@ export const updateUserMFA = async (req, res) => {
             return res.status(200).json({ message: "MFA enabled successfully" });
         }
         if (mfa_type === 'totp') {
-            console.log('User: ', user);
-            console.log('totp: ', totp_secret);
             if (!otp && !totp_secret) {
                 return res.status(400).json({ message: "Please provide the OTP and secret" });
             }
@@ -445,8 +437,6 @@ export const updateUserMFA = async (req, res) => {
             if (!isValid) {
                 return res.status(401).json({ message: "Invalid OTP" });
             }
-            console.log('User: ', user);
-            console.log('req.body: ', req.body);
             if (existingMFA) {
                 const [updateResult] = await pgquery('UPDATE auth_user_mfa SET is_enabled = $1, mfa_secret = $2 WHERE user_id = $3 AND mfa_type = $4 returning *', [is_enabled, mfa_type === 'none' ? null : totp_secret, user_id, mfa_type]);
                 if (!updateResult) {
@@ -470,17 +460,14 @@ export const updateUserMFA = async (req, res) => {
 
 export const getMFAData = async (req, res) => {
     const { user_id } = req.user;
-    console.log('User ID: ', user_id);
     try {
         // Fetch user info
         const [user] = await pgquery('SELECT user_id, username, email, phone FROM auth_users WHERE user_id = $1', [user_id]);
         if (!user) {
             return res.status(404).json({ message: "User not found" });
         }
-        console.log('User: ', user);
         // Fetch MFA data
         const mfaMethods = await pgquery('SELECT mfa_type, mfa_secret, is_enabled FROM auth_user_mfa WHERE user_id = $1', [user_id]);
-        console.log('MFA Methods: ', mfaMethods);
         // Process the MFA data
         const enhancedMfaMethods = mfaMethods?.map(mfa => {
             let secretUrl = null;
@@ -489,7 +476,6 @@ export const getMFAData = async (req, res) => {
             }
             return { ...mfa, is_enabled: !!mfa.is_enabled, mfa_secret: mfa.mfa_secret || '', secretUrl };
         });
-        console.log('Enhanced MFA Methods: ', enhancedMfaMethods);
 
         // Check if any MFA method is enabled
         const isMfaEnabled = enhancedMfaMethods?.some(method => method.is_enabled) || false;
@@ -570,7 +556,7 @@ export const verifyMagicLink = async (req, res) => {
         if (!accessToken) {
             return res.status(500).json({ message: "Internal server error while creating access token" });
         }
-        const [refreshTokenResult] = await pgquery('INSERT INTO refresh_tokens (user_id, user_agent, token, access_token, session_id) VALUES ($1, $2, $3, $4, $5) returning *', [user.user_id, req.headers['user-agent'], refreshToken, accessToken, req.cookies.session_id]);
+        const [refreshTokenResult] = await pgquery('INSERT INTO refresh_tokens (user_id, user_agent, token, access_token, session_id) VALUES ($1, $2, $3, $4, $5) returning *', [user.user_id, req.headers['user-agent'], refreshToken, accessToken, req.session.sessionId]);
         if (refreshTokenResult.refresh_token_id) {
             res.cookie('accessToken', accessToken, {
                 httpOnly: true,
@@ -673,7 +659,7 @@ export const updatePassword = async (req, res) => {
         if (!accessToken) {
             return res.status(500).json({ message: "Internal server error while creating access token" });
         }
-        const [refreshTokenResult] = await pgquery('INSERT INTO refresh_tokens (user_id, user_agent, token, access_token, session_id) VALUES ($1, $2, $3, $4, $5) returning *', [updatedUser.user_id, req.headers['user-agent'], refreshToken, accessToken, req.cookies.session_id]);
+        const [refreshTokenResult] = await pgquery('INSERT INTO refresh_tokens (user_id, user_agent, token, access_token, session_id) VALUES ($1, $2, $3, $4, $5) returning *', [updatedUser.user_id, req.headers['user-agent'], refreshToken, accessToken, req.session.sessionId]);
         if (refreshTokenResult.refresh_token_id) {
             res.cookie('accessToken', accessToken, {
                 httpOnly: true,

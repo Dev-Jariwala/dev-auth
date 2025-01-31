@@ -4,6 +4,7 @@ import authRoutes from './routes/auth.routes.js';
 import cors from 'cors'
 import { v4 as uuid } from 'uuid';
 import { pgquery } from './utils/pgquery.js';
+import session from "express-session";
 
 const app = express();
 app.use(express.json());
@@ -14,18 +15,24 @@ app.use(cors({
     origin: ['https://work.memighty.com', 'http://localhost:5173', process.env.FRONTEND_DOMAIN],
     credentials: true,
 }));
+app.use(
+    session({
+        secret: process.env.SESSION_SECRET,
+        resave: false,
+        saveUninitialized: false,
+        cookie: { maxAge: null, secure: process.env.NODE_ENV === 'production' },
+    })
+);
 
 const sessionMiddleware = (req, res, next) => {
-    const existingSessionId = req.cookies.session_id;
+    const existingSessionId = req.session.sessionId;
+
     if (!existingSessionId) {
         // Generate a new sessionId
         const newSessionId = uuid();
-        req.cookies.session_id = newSessionId;
-        res.cookie('session_id', newSessionId, {
-            httpOnly: true,
-            secure: true,
-            sameSite: 'none',
-        });
+        console.log(`req.session: ${req.session}`);
+        req.session.sessionId = newSessionId;
+        req.session.visited = true;
         if (req.cookies.accessToken) {
             console.log('Access token exists');
             const updateSessionIdQuery = `UPDATE refresh_tokens SET session_id = $1 WHERE access_token = $2`;

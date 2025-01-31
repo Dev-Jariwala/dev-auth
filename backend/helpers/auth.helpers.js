@@ -1,24 +1,66 @@
 import jwt from 'jsonwebtoken';
 import nodeMailer from 'nodemailer';
 import { pgquery } from '../utils/pgquery.js';
-import { authenticator } from 'otplib';
+import { authenticator, totp, hotp } from 'otplib';
+
+const step = 5 * 60; //300 sec means 5 min
+const window = 1;
+export const generateSecret = (method = 'authenticator') => {
+  let secret = null;
+
+  if (method === 'totp') {
+    secret = totp.generateSecret();
+  } else if (method === 'hotp') {
+    secret = hotp.generateSecret();
+  } else {
+    secret = authenticator.generateSecret();
+  }
+
+  return secret
+};
+
+// Function to generate a TOTP with 5-minute validity
+export const generateOtp = (secret, method = 'authenticator') => {
+  let token = null;
+  const startTime = new Date();
+  console.log(`[${startTime.toISOString()}] Generating OTP with method: ${method}, secret: ${secret}`);
+
+  if (method === 'totp') {
+    token = totp.generate(secret, { step });
+  } else if (method === 'hotp') {
+    console.log('generating hotp')
+    token = hotp.generate(secret, 0);
+  } else {
+    token = authenticator.generate(secret);
+  }
+
+  console.log(`[${new Date().toISOString()}] Generated OTP: ${token}`);
+  return token;
+};
+
+// Function to verify a TOTP or HOTP with configured parameters
+export const verifyOtp = (secret, token, method = 'authenticator') => {
+  const verifyStartTime = new Date();
+  console.log(`[${verifyStartTime.toISOString()}] Verifying OTP: ${token}, secret: ${secret}, method: ${method}`);
+
+  let valid = false;
+  if (method === 'totp') {
+      console.log(`verifying totp with step ${step}, window ${window}`)
+    valid = totp.verify({ token, secret, step, window });
+  } else if (method === 'hotp') {
+      console.log(`verifying hotp`)
+    // Use the verify method not check method (verify method also checks the counter automatically and handles out of sync counter issues)
+    valid = hotp.verify({ token, secret, counter: 0 });
+  } else {
+    valid = authenticator.verify({ token, secret });
+  }
+    console.log(`[${new Date().toISOString()}] Verification result: ${valid}`);
+  return valid;
+};
 // Helper function to handle errors
 export const handleError = (fnName, res, error, message = "Internal server error") => {
   console.error(`Error in chats.controller.js | function name : ${fnName}: `, error);
   return res.status(500).json({ success: false, message, error: error.message });
-};
-const step = 300; //300 sec means 5 min
-export const generateSecret = () => authenticator.generateSecret();
-
-// Function to generate a TOTP with 5-minute validity
-export const generateOtp = (secret) => {
-  const token = authenticator.generate(secret);
-  return token;
-};
-
-export const verifyOtp = (secret, token) => {
-  const valid = authenticator.verify({ token, secret });
-  return valid;
 };
 
 export const generateRefreshToken = async (user, expiresIn = 1000) => {

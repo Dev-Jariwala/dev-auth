@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query"
-import { generateMagicLink, generatePasswordResetLink } from "../../services/authServices"
+import { generatePasswordResetLink } from "../../services/authServices"
 import { toast } from "react-toastify"
 import { z } from "zod"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -88,7 +88,7 @@ const ForgotPassword = () => {
                                     </AlertDescription>
                                 </Alert>
                             )}
-                            <Button
+                            {!isResetLinkSent && <Button
                                 type="submit"
                                 className="w-full"
                                 isLoading={resetLinkMutation.isPending}
@@ -96,7 +96,7 @@ const ForgotPassword = () => {
                                 loadingText="Logging in..."
                             >
                                 Send Reset Link
-                            </Button>
+                            </Button>}
                             <Button onClick={() => navigate('/login')} type="button" variant="outline" className="w-full">
                                 <span><ChevronLeft /></span>
                                 <span>Back to Login</span>
