@@ -38,10 +38,19 @@ export const basicAuth = async (req, res, next) => {
                 req.cookies.accessToken = accessToken;
                 req.accessToken = accessToken;
                 req.refreshToken = result.token;
+                // decode the new token and set the decoded object on the request
+                decoded = decode(accessToken);
+                if (!decoded) {
+                    return res.status(401).send({ message: "Unauthorized" });
+                }
+                req.user = decoded.user;
+
+                return next();
             }
             return res.status(401).send({ message: "Unauthorized" });
         }
-        req.decoded = decoded;
+        req.accessToken = token;
+        req.refreshToken = result.token;
         req.user = decoded.user;
         next();
     });

@@ -1,7 +1,7 @@
 import { pgquery } from "../utils/pgquery.js";
 import bcrypt from "bcrypt";
 import jwt from 'jsonwebtoken';
-import { consumeToken, generateAccessTokenFromRefreshToken, generateEmailVerificationLink, generateOtp, generateRefreshToken, generateSecret, handleError, sanitizeEmail, sanitizePhone, sendEmailVerificationLinkHelper, sendMagicLink, sendOtp, sendResetPasswordLink, verifyOtp } from "../helpers/auth.helpers.js";
+import { consumeToken, deleteOTP, generateAccessTokenFromRefreshToken, generateEmailVerificationLink, generateOtp, generateRefreshToken, generateSecret, checkOtp, handleError, sanitizeEmail, sanitizePhone, sendEmailVerificationLinkHelper, sendMagicLink, sendOtp, sendResetPasswordLink, storeOTP, verifyOtp } from "../helpers/auth.helpers.js";
 import { authenticator } from "otplib";
 
 /* 
@@ -14,7 +14,6 @@ CREATE TABLE auth_users(
     phone VARCHAR(20) UNIQUE,
     password TEXT,
     is_email_verified BOOLEAN DEFAULT FALSE,
-    email_verification_token TEXT UNIQUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ); 
@@ -59,15 +58,6 @@ CREATE TABLE auth_tokens (
     additional_data JSONB, -- Store extra data like phone number, or other data
 );
  */
-/* 
--- Table for OTPs
-create table otps(
-    sr_no serial primary key,
-    session_id uuid not null,
-    otp varchar not null,
-    type varchar not null
-);
- */
 export const registerUser = async (req, res) => {
     const { email, username, phone, password } = req.body;
     if (!email || !username || !phone || !password) {
@@ -109,19 +99,20 @@ export const loginUser = async (req, res) => {
     try {
         const [user] = await pgquery(`SELECT * FROM auth_users WHERE email = $1 OR username = $1 OR phone = $1`, [loginId]);
         if (!user) {
-            return res.status(401).json({ message: "Invalid credentials" });
+            return res.status(400).json({ message: "Invalid credentials" });
         }
 
         const isPasswordValid = await bcrypt.compare(password, user.password);
         if (!isPasswordValid) {
-            return res.status(401).json({ message: "Invalid credentials" });
+            return res.status(400).json({ message: "Invalid credentials" });
         }
 
         // check if user email is verified
         if (!user.is_email_verified) {
             const emailVerificationLink = await generateEmailVerificationLink(req, { user_id: user.user_id });
+            console.log('Email Verification Link: ', emailVerificationLink);
             sendEmailVerificationLinkHelper(user.email, emailVerificationLink);
-            return res.status(401).json({ message: "Email not verified", error: "Email not verified" });
+            return res.status(400).json({ message: "Email not verified", error: "Email not verified" });
         }
         if (!sessionId) {
             return res.status(500).json({ message: "Session ID not found" });
@@ -142,67 +133,55 @@ export const loginUser = async (req, res) => {
                 }
             });
             // If MFA is enabled but no mfa_type is provided by user, tell frontend that mfa required
-            return res.status(401).json({
+            return res.status(400).json({
                 message: "MFA required",
                 error: "MFA required",
                 mfaMethods: senitizedMfaMethods
             });
         } else if (!mfaMethods.find((mfa) => mfa.mfa_type === mfa_type)) {
             // if user has provided mfa_type that does not exists in db
-            return res.status(401).json({ message: "Invalid MFA type" });
+            return res.status(400).json({ message: "Invalid MFA type" });
         }
         else if (mfa_type === 'phone_otp') {
             return res.status(400).json({ message: "Feature not implemented yet" }); // return error for phone_otp
 
         }
         else if (mfa_type === 'totp' && !otp) {
-            return res.status(401).json({ message: "OTP required", error: "OTP required" });
+            return res.status(400).json({ message: "OTP required", error: "OTP required" });
         }
         else if (mfa_type === 'totp' && otp) {
             const selectedMfa = mfaMethods.find(m => m.mfa_type === 'totp');
             console.log('Selected MFA: ', selectedMfa);
             const isValid = verifyOtp(selectedMfa.mfa_secret, otp); // Verify totp
             if (!isValid) {
-                return res.status(401).json({ message: "Invalid OTP", error: "Invalid OTP" });
+                return res.status(400).json({ message: "Invalid OTP", error: "Invalid OTP" });
             }
         }
         else if (mfa_type === 'email_otp' && !otp) {
             // Generate OTP using otplib
             const otp = generateOtp(sessionId);
-            console.log('OTP: ', otp);
-            // Check if OTP already exists for the session
-            const [existingOtp] = await pgquery('SELECT * FROM otps WHERE session_id = $1 AND type = $2', [sessionId, 'login']);
-            if (existingOtp) {
-                // Update the existing OTP
-                const [updateResult] = await pgquery('UPDATE otps SET otp = $1 WHERE session_id = $2 AND type = $3 returning *', [otp, sessionId, 'login']);
-                if (!updateResult) {
-                    return res.status(500).json({ message: "Internal server error while updating OTP" });
-                }
-            } else {
-                // Save the new OTP in the database
-                const [result] = await pgquery('INSERT INTO otps (session_id, otp, type) VALUES ($1, $2, $3) returning *', [sessionId, otp, 'login']);
-                if (!result) {
-                    return res.status(500).json({ message: "Internal server error while generating OTP" });
-                }
+
+            // Save the new OTP in the database
+            const result = await storeOTP(sessionId, otp, 'login');
+            if (!result) {
+                return res.status(500).json({ message: "Internal server error while generating OTP" });
             }
             sendOtp(user.email, otp);
-            return res.status(401).json({
+            return res.status(400).json({
                 message: "OTP sent",
                 error: "OTP sent",
                 step: 'otp'
             });
         }
         else if (mfa_type === 'email_otp' && otp) {
-            const isValid = verifyOtp(sessionId, otp);
-            if (!isValid) {
-                return res.status(401).json({ message: "Invalid OTP", error: "Invalid OTP" });
-            }
-            const [otpResult] = await pgquery('SELECT * FROM otps WHERE session_id = $1 AND otp = $2 AND type = $3', [sessionId, otp, 'login']);
+
+            const otpResult = await checkOtp(sessionId, otp, 'login');
+            console.log('OTP Result: ', otpResult);
             if (!otpResult) {
-                return res.status(401).json({ message: "Invalid OTP", error: "Invalid OTP" });
+                return res.status(400).json({ message: "Invalid OTP", error: "Invalid OTP" });
             }
             // Delete the OTP from the database
-            const [deleteResult] = await pgquery('DELETE FROM otps WHERE session_id = $1 returning *', [otpResult.session_id]);
+            const deleteResult = await deleteOTP(otpResult.sessionId, 'login');
             if (!deleteResult) {
                 return res.status(500).json({ message: "Internal server error while deleting OTP" });
             }
@@ -212,7 +191,7 @@ export const loginUser = async (req, res) => {
         const refreshToken = await generateRefreshToken(user, refreshTokenExpiresIn);
         const accessToken = await generateAccessTokenFromRefreshToken(refreshToken);
         if (!accessToken) {
-            return res.status(500).json({ message: "Internal server error while creating access token" });
+            return res.status(400).json({ message: "Internal server error while creating access token" });
         }
         const [result] = await pgquery('INSERT INTO refresh_tokens (user_id, user_agent, token, access_token, session_id) VALUES ($1, $2, $3, $4, $5) returning *', [user.user_id, req.headers['user-agent'], refreshToken, accessToken, sessionId]);
         if (result.refresh_token_id) {
@@ -233,7 +212,11 @@ export const loginUser = async (req, res) => {
 export const logoutUser = async (req, res) => {
     try {
         const refreshToken = req.refreshToken;
+        console.log('Refresh Token: ', refreshToken);
         const [result] = await pgquery('UPDATE refresh_tokens SET revoked = $1, revoked_at = NOW() WHERE token = $2 returning *', [true, refreshToken]);
+        if (!result) {
+            return res.status(500).json({ message: "Internal server error while revoking refresh token" });
+        }
         res.clearCookie('accessToken');
         res.status(200).json({ result });
     } catch (error) {
@@ -255,7 +238,7 @@ export const authenticateUser = async (req, res) => {
     const verifykey = process.env.JWT_SECRET;
 
     if (!token) {
-        return res.status(401).send({ message: "No token provided" });
+        return res.status(401).send({ message: "Login required" });
     }
     const [result] = await pgquery('SELECT * FROM refresh_tokens WHERE access_token = $1', [token]);
     if (!result) {
@@ -304,9 +287,20 @@ export const verifyEmail = async (req, res) => {
                 }
                 return res.send("Invalid link");
             }
-            const [result] = await pgquery('UPDATE auth_users SET is_email_verified = $1, email_verification_token = $2 WHERE user_id = $3 AND email_verification_token =$4 returning *', [true, null, decoded.user_id, token]);
+            // Check if the token is already consumed or expired
+            const [authTokenResult] = await pgquery('SELECT * FROM auth_tokens WHERE token = $1 AND token_type = $2 AND is_consumed = $3 AND expires_at > NOW()', [token, 'email_verification', false]);
+            if (!authTokenResult) {
+                return res.send("Invalid link");
+            }
+            // Update the user email verification status
+            const [result] = await pgquery('UPDATE auth_users SET is_email_verified = $1 WHERE user_id = $2 returning *', [true, decoded.user_id]);
             if (!result) {
                 return res.send("Failed to verify email. Please try again later.");
+            }
+            // Mark the token as consumed
+            const [updateTokenResult] = await pgquery('UPDATE auth_tokens SET is_consumed = $1 WHERE token = $2 returning *', [true, token]);
+            if (!updateTokenResult) {
+                return res.send("Failed to mark token consumed.");
             }
             return res.send("Email verified successfully. You can close the tab.");
         });
@@ -320,7 +314,7 @@ export const sendEmailVerificationLink = async (req, res) => {
     try {
         const [user] = await pgquery(`SELECT * FROM auth_users WHERE email = $1 OR username = $1 OR phone = $1`, [loginId]);
         if (!user) {
-            return res.status(401).json({ message: "Invalid credentials" });
+            return res.status(400).json({ message: "Invalid credentials" });
         }
         // check if user email is verified
         if (user.is_email_verified) {
@@ -334,22 +328,6 @@ export const sendEmailVerificationLink = async (req, res) => {
         handleError("sendEmailVerificationLink", res, error);
     }
 }
-
-export const revokeEmailVerificationToken = async (req, res) => {
-    const { user_id } = req.user; // Ensure the user is authenticated
-    try {
-        const [result] = await pgquery(
-            'UPDATE auth_users SET email_verification_token = NULL WHERE user_id = $1 RETURNING *',
-            [user_id]
-        );
-        if (!result) {
-            return res.status(500).json({ message: "Failed to revoke email verification token" });
-        }
-        return res.status(200).json({ message: "Email verification token revoked successfully" });
-    } catch (error) {
-        handleError("revokeEmailVerificationToken", res, error);
-    }
-};
 
 // Controller to enable MFA for a user
 export const updateUserMFA = async (req, res) => {
@@ -374,20 +352,11 @@ export const updateUserMFA = async (req, res) => {
         if (mfa_type === 'email_otp' && !otp) {
             // Generate OTP using otplib
             const otp = generateOtp(sessionId, 'totp');
-            // Check if OTP already exists for the session
-            const [existingOtp] = await pgquery('SELECT * FROM otps WHERE session_id = $1 AND type = $2', [sessionId, 'mfa']);
-            if (existingOtp) {
-                // Update the existing OTP
-                const [updateResult] = await pgquery('UPDATE otps SET otp = $1 WHERE session_id = $2 AND type = $3 returning *', [otp, sessionId, 'mfa']);
-                if (!updateResult) {
-                    return res.status(500).json({ message: "Internal server error while updating OTP" });
-                }
-            } else {
-                // Save the new OTP in the database
-                const [result] = await pgquery('INSERT INTO otps (session_id, otp, type) VALUES ($1, $2, $3) returning *', [sessionId, otp, 'mfa']);
-                if (!result) {
-                    return res.status(500).json({ message: "Internal server error while generating OTP" });
-                }
+
+            // Save the new OTP
+            const result = await storeOTP(sessionId, otp, 'mfa');
+            if (!result) {
+                return res.status(500).json({ message: "Internal server error while storing OTP" });
             }
             sendOtp(user.email, otp);
 
@@ -399,14 +368,10 @@ export const updateUserMFA = async (req, res) => {
             });
         }
         if (mfa_type === 'email_otp' && otp) {
-            // Verify the OTP
-            const isValid = verifyOtp(sessionId, otp, 'totp');
-            if (!isValid) {
-                return res.status(401).json({ message: "Invalid OTP", error: "Invalid OTP" });
-            }
-            const [otpResult] = await pgquery('SELECT * FROM otps WHERE session_id = $1 AND otp = $2 AND type = $3', [sessionId, otp, 'mfa']);
+
+            const otpResult = await checkOtp(sessionId, otp, 'mfa');
             if (!otpResult) {
-                return res.status(401).json({ message: "Invalid OTP result", error: "Invalid OTP result" });
+                return res.status(400).json({ message: "Invalid OTP", error: "Invalid OTP" });
             }
 
             if (existingMFA) {
@@ -422,8 +387,7 @@ export const updateUserMFA = async (req, res) => {
                 }
             }
 
-            // Delete the OTP from the database
-            const [deleteResult] = await pgquery('DELETE FROM otps WHERE session_id = $1 returning *', [otpResult.session_id]);
+            const deleteResult = await deleteOTP(otpResult.sessionId, otpResult.type);
             if (!deleteResult) {
                 return res.status(500).json({ message: "Internal server error while deleting OTP" });
             }
@@ -435,7 +399,7 @@ export const updateUserMFA = async (req, res) => {
             }
             const isValid = verifyOtp(totp_secret, otp);
             if (!isValid) {
-                return res.status(401).json({ message: "Invalid OTP" });
+                return res.status(400).json({ message: "Invalid OTP" });
             }
             if (existingMFA) {
                 const [updateResult] = await pgquery('UPDATE auth_user_mfa SET is_enabled = $1, mfa_secret = $2 WHERE user_id = $3 AND mfa_type = $4 returning *', [is_enabled, mfa_type === 'none' ? null : totp_secret, user_id, mfa_type]);
@@ -503,7 +467,7 @@ export const generateMagicLink = async (req, res) => {
     try {
         const [user] = await pgquery('SELECT * FROM auth_users WHERE email = $1 OR username = $1 OR phone = $1', [loginId]);
         if (!user) {
-            return res.status(401).json({ message: "Invalid credentials" });
+            return res.status(400).json({ message: "Invalid credentials" });
         }
         const token = generateSecret();
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes expiration
@@ -535,14 +499,14 @@ export const verifyMagicLink = async (req, res) => {
     try {
         const [result] = await pgquery('SELECT * FROM auth_tokens WHERE token = $1 AND token_type = $2 AND is_consumed = $3', [token, 'magic_link', false]);
         if (!result) {
-            return res.status(401).json({ message: "Invalid magic link" });
+            return res.status(400).json({ message: "Invalid magic link" });
         }
         if (new Date(result.expires_at) < new Date()) {
-            return res.status(401).json({ message: "Magic link expired" });
+            return res.status(400).json({ message: "Magic link expired" });
         }
         const [user] = await pgquery('SELECT * FROM auth_users WHERE user_id = $1', [result.user_id]);
         if (!user) {
-            return res.status(401).json({ message: "User not found" });
+            return res.status(400).json({ message: "User not found" });
         }
         // Update is_consumed to true using our helper function
         const updatedToken = await consumeToken(result.token_id);
@@ -554,7 +518,7 @@ export const verifyMagicLink = async (req, res) => {
         const refreshToken = await generateRefreshToken(user, refreshTokenExpiresIn);
         const accessToken = await generateAccessTokenFromRefreshToken(refreshToken);
         if (!accessToken) {
-            return res.status(500).json({ message: "Internal server error while creating access token" });
+            return res.status(400).json({ message: "Internal server error while creating access token" });
         }
         const [refreshTokenResult] = await pgquery('INSERT INTO refresh_tokens (user_id, user_agent, token, access_token, session_id) VALUES ($1, $2, $3, $4, $5) returning *', [user.user_id, req.headers['user-agent'], refreshToken, accessToken, req.session.sessionId]);
         if (refreshTokenResult.refresh_token_id) {
@@ -582,7 +546,7 @@ export const generatePasswordResetLink = async (req, res) => {
     try {
         const [user] = await pgquery('SELECT * FROM auth_users WHERE email = $1 OR username = $1 OR phone = $1', [loginId]);
         if (!user) {
-            return res.status(401).json({ message: "Invalid credentials" });
+            return res.status(400).json({ message: "Invalid credentials" });
         }
         const token = generateSecret();
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes expiration
@@ -596,6 +560,7 @@ export const generatePasswordResetLink = async (req, res) => {
             return res.status(500).json({ message: "Internal server error while creating password reset link" });
         }
         const passwordResetLink = `${frontend_domain}/reset-password?token=${token}`;
+        console.log('Password Reset Link: ', passwordResetLink);
         sendResetPasswordLink(user.email, passwordResetLink)
         return res.status(200).json({ message: "Password reset link sent successfully" });
     } catch (error) {
@@ -612,10 +577,10 @@ export const verifyPasswordResetLink = async (req, res) => {
     try {
         const [result] = await pgquery('SELECT * FROM auth_tokens WHERE token = $1 AND token_type = $2 AND is_consumed = $3', [token, 'password_reset', false]);
         if (!result) {
-            return res.status(401).json({ message: "Invalid password reset link" });
+            return res.status(400).json({ message: "Invalid password reset link" });
         }
         if (new Date(result.expires_at) < new Date()) {
-            return res.status(401).json({ message: "Password reset link expired" });
+            return res.status(400).json({ message: "Password reset link expired" });
         }
         return res.status(200).json({ message: "Password reset link verified", success: true });
     } catch (error) {
@@ -633,14 +598,14 @@ export const updatePassword = async (req, res) => {
     try {
         const [result] = await pgquery('SELECT * FROM auth_tokens WHERE token = $1 AND token_type = $2 AND is_consumed = $3', [token, 'password_reset', false]);
         if (!result) {
-            return res.status(401).json({ message: "Invalid password reset link" });
+            return res.status(400).json({ message: "Invalid password reset link" });
         }
         if (new Date(result.expires_at) < new Date()) {
-            return res.status(401).json({ message: "Password reset link expired" });
+            return res.status(400).json({ message: "Password reset link expired" });
         }
         const [user] = await pgquery('SELECT * FROM auth_users WHERE user_id = $1', [result.user_id]);
         if (!user) {
-            return res.status(401).json({ message: "User not found" });
+            return res.status(400).json({ message: "User not found" });
         }
         const hashedPassword = await bcrypt.hash(newPassword, 10);
         const [updatedUser] = await pgquery('UPDATE auth_users SET password = $1 WHERE user_id = $2 returning *', [hashedPassword, user.user_id]);
@@ -657,7 +622,7 @@ export const updatePassword = async (req, res) => {
         const refreshToken = await generateRefreshToken(updatedUser, refreshTokenExpiresIn);
         const accessToken = await generateAccessTokenFromRefreshToken(refreshToken);
         if (!accessToken) {
-            return res.status(500).json({ message: "Internal server error while creating access token" });
+            return res.status(400).json({ message: "Internal server error while creating access token" });
         }
         const [refreshTokenResult] = await pgquery('INSERT INTO refresh_tokens (user_id, user_agent, token, access_token, session_id) VALUES ($1, $2, $3, $4, $5) returning *', [updatedUser.user_id, req.headers['user-agent'], refreshToken, accessToken, req.session.sessionId]);
         if (refreshTokenResult.refresh_token_id) {
@@ -672,5 +637,34 @@ export const updatePassword = async (req, res) => {
         }
     } catch (error) {
         handleError("updatePassword", res, error);
+    }
+};
+
+/* 
+-- Table for refresh tokens
+CREATE TABLE refresh_tokens(
+    sr_no SERIAL PRIMARY KEY,
+    refresh_token_id uuid not null unique default gen_random_uuid(),
+    user_id UUID REFERENCES auth_users(user_id) ON DELETE CASCADE,
+    token TEXT UNIQUE NOT NULL,
+    access_token TEXT UNIQUE NOT NULL,
+    user_agent TEXT NOT NULL,
+    revoked BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    revoked_at timestamp,
+    session_id uuid
+);
+ */
+// Assuming you are still using the same pgquery
+export const getUserSessions = async (req, res) => {
+    try {
+        const { user_id } = req.user;
+        const result = await pgquery('SELECT * FROM refresh_tokens WHERE user_id = $1 ORDER BY created_at DESC', [user_id]);
+        if (!result) {
+            return res.status(404).json({ message: "No sessions found" });
+        }
+        return res.status(200).json({ result });
+    } catch (error) {
+        handleError("getUserSessions", res, error);
     }
 };

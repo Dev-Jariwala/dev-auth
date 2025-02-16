@@ -92,7 +92,7 @@ const MagicLogin = () => {
                                     </AlertDescription>
                                 </Alert>
                             )}
-                            <Button
+                            {!isMagicLinkSent && <Button
                                 type="submit"
                                 className="w-full"
                                 isLoading={magicLinkMutation.isPending}
@@ -100,7 +100,7 @@ const MagicLogin = () => {
                                 loadingText="Logging in..."
                             >
                                 Send Magic Link
-                            </Button>
+                            </Button>}
                             <Button onClick={() => navigate('/login')} type="button" variant="outline" className="w-full">
                                 <span><ChevronLeft /></span>
                                 <span>Back to Login</span>

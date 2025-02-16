@@ -1,6 +1,6 @@
 /* eslint-disable react/prop-types */
 import * as React from "react"
-import { ChevronRight, Fingerprint, LayoutDashboard, ListTodo } from 'lucide-react';
+import { ChevronRight, Fingerprint, KeyRound, LayoutDashboard, ListTodo, MessageCircle } from 'lucide-react';
 import { Sidebar as SidebarComponent, SidebarContent, SidebarGroup, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem, SidebarProvider, SidebarRail, } from "@/components/ui/sidebar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger, } from "@/components/ui/collapsible"
 import { Link, Outlet, useLocation } from "react-router-dom";
@@ -24,10 +24,24 @@ const data = {
             isCollapsible: false,
         },
         {
+            title: 'Security',
+            icon: KeyRound,
+            className: 'text-orange-500',
+            link: '/security',
+            isCollapsible: false,
+        },
+        {
             title: 'Todos',
             icon: ListTodo,
             className: 'text-green-500',
             link: '/todo',
+            isCollapsible: false,
+        },
+        {
+            title: 'Chats',
+            icon: MessageCircle,
+            className: 'text-purple-500',
+            link: '/chats',
             isCollapsible: false,
         },
     ]

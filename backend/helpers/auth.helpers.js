@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import nodeMailer from 'nodemailer';
 import { pgquery } from '../utils/pgquery.js';
 import { authenticator, totp, hotp } from 'otplib';
+import { redisClient } from '../config/redis.js';
 
 const step = 5 * 60; //300 sec means 5 min
 const window = 1;
@@ -45,22 +46,74 @@ export const verifyOtp = (secret, token, method = 'authenticator') => {
 
   let valid = false;
   if (method === 'totp') {
-      console.log(`verifying totp with step ${step}, window ${window}`)
+    console.log(`verifying totp with step ${step}, window ${window}`)
     valid = totp.verify({ token, secret, step, window });
   } else if (method === 'hotp') {
-      console.log(`verifying hotp`)
+    console.log(`verifying hotp`)
     // Use the verify method not check method (verify method also checks the counter automatically and handles out of sync counter issues)
     valid = hotp.verify({ token, secret, counter: 0 });
   } else {
     valid = authenticator.verify({ token, secret });
   }
-    console.log(`[${new Date().toISOString()}] Verification result: ${valid}`);
+  console.log(`[${new Date().toISOString()}] Verification result: ${valid}`);
   return valid;
 };
+
 // Helper function to handle errors
 export const handleError = (fnName, res, error, message = "Internal server error") => {
   console.error(`Error in chats.controller.js | function name : ${fnName}: `, error);
   return res.status(500).json({ success: false, message, error: error.message });
+};
+// Function to store OTP in Redis
+export const storeOTP = async (sessionId, otp, type, ttl = 300) => {
+  if (!sessionId || !otp || !type) return null;
+  const key = `otp:${sessionId}:${type}`; // Unique key for the OTP
+  try {
+    await redisClient.set(key, otp, { EX: ttl }); // Store OTP with a TTL (time-to-live) in seconds
+    console.log(`OTP stored in Redis with key: ${key}`);
+    return { key, sessionId, otp, type, ttl };
+  } catch (err) {
+    handleError('storeOTP', null, err, 'Error storing OTP in Redis');
+    return null;
+  }
+};
+
+// Function to retrieve OTP from Redis
+export const checkOtp = async (sessionId, otp, type) => {
+  if (!sessionId || !type || !otp) return null;
+  const key = `otp:${sessionId}:${type}`;
+  try {
+    const otpResult = await redisClient.get(key);
+    if (!otpResult) {
+      console.log(`OTP not found in Redis with key: ${key}`);
+      return null;
+    }
+    // Compare the OTP from Redis with the input OTP
+    if (otpResult === otp) {
+      console.log(`OTP matched: ${otp}`);
+      return { key, sessionId, otp, type };
+    } else {
+      console.log(`OTP mismatch: ${otp} !== ${otp}`);
+      return null;
+    }
+  } catch (err) {
+    handleError('checkOtp', null, err, 'Error getting OTP from Redis');
+    return null;
+  }
+};
+
+// Function to delete OTP from Redis
+export const deleteOTP = async (sessionId, type) => {
+  if (!sessionId || !type) return null;
+  const key = `otp:${sessionId}:${type}`;
+  try {
+    await redisClient.del(key);
+    console.log(`OTP deleted from Redis with key: ${key}`);
+    return { key, sessionId, type };
+  } catch (err) {
+    handleError('deleteOTP', null, err, 'Error deleting OTP from Redis');
+    return null;
+  }
 };
 
 export const generateRefreshToken = async (user, expiresIn = 1000) => {
@@ -76,9 +129,20 @@ export const generateEmailVerificationLink = async (req, payload) => {
     const emailVerificationToken = jwt.sign(payload, process.env.JWT_EMAIL_SECRET, {
       expiresIn: 60 * 5
     });
-    const [result] = await pgquery('UPDATE auth_users SET email_verification_token = $1 WHERE user_id = $2 returning *', [emailVerificationToken, payload.user_id]);
-    if (!result) {
-      throw new Error("Failed to update email verification token in database");
+    // check existing token in db for email verification
+    const [existingToken] = await pgquery('SELECT * FROM auth_tokens WHERE user_id = $1 AND token_type = $2', [payload.user_id, 'email_verification']);
+    if (existingToken) {
+      // if token exists, update the token
+      const [updatedToken] = await pgquery('UPDATE auth_tokens SET token = $1, expires_at = $2 WHERE token_id = $3 returning *', [emailVerificationToken, new Date(Date.now() + 1000 * 60 * 5), existingToken.token_id]);
+      if (!updatedToken) {
+        throw new Error("Failed to update email verification token");
+      }
+    } else {
+      // if token does not exist, insert a new token
+      const [newToken] = await pgquery('INSERT INTO auth_tokens (user_id, token, token_type, expires_at) VALUES ($1, $2, $3, $4) returning *', [payload.user_id, emailVerificationToken, 'email_verification', new Date(Date.now() + 1000 * 60 * 5)]);
+      if (!newToken) {
+        throw new Error("Failed to insert email verification token");
+      }
     }
     const emailVerificationLink = `${req.protocol}://${req.get('host')}/api/auth/email/verify?token=${emailVerificationToken}`;
     return emailVerificationLink;
@@ -117,7 +181,7 @@ export const generateAccessTokenFromRefreshToken = async (refreshToken) => {
           throw new Error("Invalid refresh token");
         }
         accessToken = jwt.sign({ user: decoded.user }, process.env.JWT_SECRET, {
-          expiresIn: 60 * 5
+          // expiresIn: 60 * 5
         });
       } catch (error) {
         console.error("Error in generateAccessTokenFromRefreshToken 1: ", error);

@@ -10,6 +10,8 @@ import MagicLink from "../components/auth/MagicLink"
 import MagicLogin from "../components/auth/MagicLogin"
 import ForgotPassword from "../components/auth/ForgotPassword"
 import ResetPassword from "../components/auth/ResetPassword"
+import UserSessions from "../components/sessions/UserSessions"
+import Chat from "../components/chats/Chat"
 
 const RoutesComponent = () => {
     return (
@@ -20,6 +22,8 @@ const RoutesComponent = () => {
                         <Route path='' element={<Home />} />
                         <Route path='mfa' element={<MFA />} />
                         <Route path='/todo' element={<Todos />} />
+                        <Route path='/security' element={<UserSessions />} />
+                        <Route path="/chats" element={<Chat />} />
                     </Route>
                 </Route>
                 <Route path="/login" element={<Login />} />
